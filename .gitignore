@@ -6,4 +6,7 @@ __pycache__/
 # Jupyter Notebook
 .ipynb_checkpoints
 
-mimic/credentials.json
+# Dataset directory
+
+dataset/
+

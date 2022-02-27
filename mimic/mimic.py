@@ -4,17 +4,18 @@ This modules reads postgre sql database for MIMIC-IV and returns table as pandas
 Author: Priyanshu Sinha (prisinha@iu.edu)
 """
 import os
-import psycopg2
+from pickle import NONE
+from cv2 import DISOpticalFlow_PRESET_MEDIUM
+from matplotlib.pyplot import axis
+from numpy import dtype
 import pandas as pd
-import json
+import dask.dataframe as dd
+import glob2
+import sys
 
 class MIMIC:
-    def __init__(self, cred_file) -> None:
-        self._credential_file = os.path.abspath(cred_file)
-        self._db_name = None
-        self._user = None
-        self._password = None
-        self._queries = None
+    def __init__(self, dir_path) -> None:
+        self._dir_path = os.path.abspath(dir_path)
         self._mimic_structure = {
             'mimic_core': ['admissions', 'patients', 'transfers'],
             'mimic_hosp': ['d_hcpcs', 'd_icd_diagnoses', 'd_icd_procedures', 'd_labitems', 'diagnoses_icd', 'drgcodes', 'emar',
@@ -22,192 +23,311 @@ class MIMIC:
                             'prescriptions', 'procedures_icd', 'services'],
             'mimic_icu': ['chartevents', 'd_items', 'datetimeevents', 'icustays', 'inputevents', 'outputevents', 'procedureevents']
         }
-        self.set_queries()
-        self.read_and_set_credentials()
 
-    @property
-    def credential_file(self):
-        return self._credential_file
-
-    @credential_file.setter
-    def credential_file(self, new_cred_file):
-        self._credential_file = os.path.abspath(new_cred_file)
-
-    def read_and_set_credentials(self):
-        with open(self._credential_file, 'r') as cred_data:
-            credentials = json.load(cred_data)
-
-        self._db_name = credentials['dbname']
-        self._user = credentials['user']
-        self._password = credentials['password']
-
-    def get_postgre_connection(self):
-        conn_string = f"dbname='{self._db_name}' user='{self._user}' password='{self._password}'"
         try:
-            connection = psycopg2.connect(conn_string)
-            cursor = connection.cursor()
-            return connection, cursor
-        except Exception as ex:
-            print(f"Exception Occured : {ex.message}")
+            assert os.path.exists(self._dir_path) #Technically I should match all the file names and their size. Will do it later.
+            print(f"MIMIC dataset found at path : {self._dir_path}")
+        except AssertionError:
+            print(f"Datsaet directory is empty. Exiting system.")
+            sys.exit(0)
 
-    def get_query_res_as_pandas_df(self, query_str):
-        """
-        Right now doing it without chunksize. 
+    def read_data(self, file_path, dtype):
+        if os.path.exists(file_path):
+            df = dd.read_csv(file_path, dtype = dtype)
+            return df
+        else:
+            print(f"Given file path {file_path} don't exist.")
+            
+    def join_path(self, file_path):
+        return os.path.join(self._dir_path, file_path)
 
-        TO-DO: Read data in chunksize and then work.
-        """
-        db_conn, db_cur = self.get_postgre_connection()
-        try:
-            table_df = pd.read_sql_query(query_str, db_conn)
-            return table_df
-        except Exception as ex:
-            print(f"Exception Occured : {ex.message}")
-            db_conn.rollback()
-        db_conn.close()
+    def read_core_admissions_csv(self):
+        df_admission = self.read_data(self.join_path('core/admissions.csv'), dtype={'admission_location': 'object',
+                                                                                        'deathtime': 'object',
+                                                                                        'edouttime': 'object',
+                                                                                        'edregtime': 'object'})
 
-    def make_select_queries(self, schema_name, relation_name):
-        return f'SELECT * from {schema_name}.{relation_name}'
+        df_admission['hadm_id'] = df_admission['hadm_id'].astype('float64')
+        df_admission['subject_id'] = df_admission['subject_id'].astype('float64')
+        return df_admission
 
-    def set_queries(self):
-        self._queries = {
-            'mimic_core_admissions': self.make_select_queries('mimic_core', self._mimic_structure['mimic_core'][0]),
-            'mimic_core_patients': self.make_select_queries('mimic_core', self._mimic_structure['mimic_core'][1]),
-            'mimic_core_transfers': self.make_select_queries('mimic_core', self._mimic_structure['mimic_core'][2]),
-            'mimic_hosp_d_hcpcs': self.make_select_queries('mimic_hosp', self._mimic_structure['mimic_hosp'][0]),
-            'mimic_hosp_d_icd_diagnoses': self.make_select_queries('mimic_hosp', self._mimic_structure['mimic_hosp'][1]),
-            'mimic_hosp_d_icd_procedures': self.make_select_queries('mimic_hosp', self._mimic_structure['mimic_hosp'][2]),
-            'mimic_hosp_d_labitems': self.make_select_queries('mimic_hosp', self._mimic_structure['mimic_hosp'][3]),
-            'mimic_hosp_diagnoses_icd': self.make_select_queries('mimic_hosp', self._mimic_structure['mimic_hosp'][4]),
-            'mimic_hosp_drgcodes': self.make_select_queries('mimic_hosp', self._mimic_structure['mimic_hosp'][5]),
-            'mimic_hosp_emar': self.make_select_queries('mimic_hosp', self._mimic_structure['mimic_hosp'][6]),
-            'mimic_hosp_emar_detail': self.make_select_queries('mimic_hosp', self._mimic_structure['mimic_hosp'][7]),
-            'mimic_hosp_hcpcsevents': self.make_select_queries('mimic_hosp', self._mimic_structure['mimic_hosp'][8]),
-            'mimic_hosp_labevents': self.make_select_queries('mimic_hosp', self._mimic_structure['mimic_hosp'][9]),
-            'mimic_hosp_microbiologyevents': self.make_select_queries('mimic_hosp', self._mimic_structure['mimic_hosp'][10]),
-            'mimic_hosp_pharmacy': self.make_select_queries('mimic_hosp', self._mimic_structure['mimic_hosp'][11]),
-            'mimic_hosp_poe': self.make_select_queries('mimic_hosp', self._mimic_structure['mimic_hosp'][12]),
-            'mimic_hosp_poe_detail': self.make_select_queries('mimic_hosp', self._mimic_structure['mimic_hosp'][13]),
-            'mimic_hosp_prescriptions': self.make_select_queries('mimic_hosp', self._mimic_structure['mimic_hosp'][14]),
-            'mimic_hosp_procedures_icd': self.make_select_queries('mimic_hosp', self._mimic_structure['mimic_hosp'][15]),
-            'mimic_hosp_services': self.make_select_queries('mimic_hosp', self._mimic_structure['mimic_hosp'][16]),
-            'mimic_icu_chartevents': self.make_select_queries('mimic_icu', self._mimic_structure['mimic_icu'][0]),
-            'mimic_icu_d_items': self.make_select_queries('mimic_icu', self._mimic_structure['mimic_icu'][1]),
-            'mimic_icu_datetimeevents': self.make_select_queries('mimic_icu', self._mimic_structure['mimic_icu'][2]),
-            'mimic_icu_icustays': self.make_select_queries('mimic_icu', self._mimic_structure['mimic_icu'][3]),
-            'mimic_icu_inputevents': self.make_select_queries('mimic_icu', self._mimic_structure['mimic_icu'][4]),
-            'mimic_icu_outputevents': self.make_select_queries('mimic_icu', self._mimic_structure['mimic_icu'][5]),
-            'mimic_icu_procedureevents': self.make_select_queries('mimic_icu', self._mimic_structure['mimic_icu'][6]),
-        }
+    def read_core_patients_csv(self):
+        df_patients = self.read_data(self.join_path('core/patients.csv'), dtype={'dod': 'object'})
+        df_patients['subject_id'] = df_patients['subject_id'].astype('float64')
+        return df_patients
 
-    def get_mimic_core_addissions(self):
-        return self.get_query_res_as_pandas_df(self._queries['mimic_core_admissions'])
-    
-    def get_mimic_core_patients(self):
-        return self.get_query_res_as_pandas_df(self._queries['mimic_core_patients'])
+    def read_core_transfers_csv(self):
+        df_transfers = self.read_data(self.join_path('core/transfers.csv'), dtype={'careunit': 'object',
+                                                                                    'hadm_id': 'float64'})
+        df_transfers['hadm_id'] = df_transfers['hadm_id'].astype('float64')
+        df_transfers['subject_id'] = df_transfers['subject_id'].astype('float64')
+        return df_transfers
 
-    def get_mimic_core_transfers(self):
-        return self.get_query_res_as_pandas_df(self._queries['mimic_core_transfers'])
+    def read_hosp_d_hcpcs_csv(self):
+        df_d_hcpcs = self.read_data(self.join_path('hosp/d_hcpcs.csv'), dtype=None)
+        return df_d_hcpcs
 
-    def get_mimic_hosp_d_hcps(self):
-        return self.get_query_res_as_pandas_df(self._queries['mimic_hosp_d_hcpcs'])
+    def read_hosp_d_icd_diagnoses_csv(self):
+        df_d_icd_diagnoses = self.read_data(self.join_path('hosp/d_icd_diagnoses.csv'), dtype={'icd_code': 'object'})
+        return df_d_icd_diagnoses
 
-    def get_mimic_hosp_d_icd_diagnoses(self):
-        return self.get_query_res_as_pandas_df(self._queries['mimic_hosp_d_icd_diagnoses'])
+    def read_hosp_d_icd_procedures_csv(self):
+        df_d_icd_procedures = self.read_data(self.join_path('hosp/d_icd_procedures.csv'), dtype={'icd_code': 'object'})
+        return df_d_icd_procedures
 
-    def get_mimic_hosp_d_icd_procedures(self):
-        return self.get_query_res_as_pandas_df(self._queries['mimic_hosp_d_icd_procedures'])
+    def read_hosp_d_labitems_csv(self):
+        df_d_labitems = self.read_data(self.join_path('hosp/d_labitems.csv'), dtype={'loinc_code': 'object'})
+        return df_d_labitems
 
-    def get_mimic_hosp_d_labitems(self):
-        return self.get_query_res_as_pandas_df(self._queries['mimic_hosp_d_labitems'])
+    def read_hosp_diagnoses_icd_csv(self):
+        df_diagnoses_icd = self.read_data(self.join_path('hosp/diagnoses_icd.csv'), dtype=None)
+        df_diagnoses_icd['subject_id'] = df_diagnoses_icd['subject_id'].astype('float64')
+        df_diagnoses_icd['hadm_id'] = df_diagnoses_icd['hadm_id'].astype('float64')
+        return df_diagnoses_icd
 
-    def get_mimic_hosp_diagnoses_icd(self):
-        return self.get_query_res_as_pandas_df(self._queries['mimic_hosp_diagnoses_icd'])
+    def read_hosp_drgcodes_csv(self):
+        df_drgcodes = self.read_data(self.join_path('hosp/drgcodes.csv'), dtype=None)
+        df_drgcodes['subject_id'] = df_drgcodes['subject_id'].astype('float64')
+        df_drgcodes['hadm_id'] = df_drgcodes['hadm_id'].astype('float64')
+        return df_drgcodes
 
-    def get_mimic_hosp_drgcodes(self):
-        return self.get_query_res_as_pandas_df(self._queries['mimic_hosp_drgcodes'])
+    def read_hosp_emar_csv(self):
+        df_emar = self.read_data(self.join_path('hosp/emar.csv'), dtype=None)
+        df_emar['subject_id'] = df_emar['subject_id'].astype('float64')
+        df_emar['hadm_id'] = df_emar['hadm_id'].astype('float64')
+        return df_emar
 
-    def get_mimic_hosp_emar(self):
-        return self.get_query_res_as_pandas_df(self._queries['mimic_hosp_emar'])
+    def read_hosp_emar_detail_csv(self):
+        df_emar_detail = self.read_data(self.join_path('hosp/emar_detail.csv'), dtype={'completion_interval': 'object',
+                                                                                        'continued_infusion_in_other_location': 'object',
+                                                                                        'dose_due': 'object',
+                                                                                        'dose_given': 'object',
+                                                                                        'infusion_complete': 'object',
+                                                                                        'infusion_rate_adjustment': 'object',
+                                                                                        'infusion_rate_unit': 'object',
+                                                                                        'new_iv_bag_hung': 'object',
+                                                                                        'non_formulary_visual_verification': 'object',
+                                                                                        'product_amount_given': 'object',
+                                                                                        'product_description_other': 'object',
+                                                                                        'reason_for_no_barcode': 'object',
+                                                                                        'restart_interval': 'object',
+                                                                                        'route': 'object',
+                                                                                        'side': 'object',
+                                                                                        'site': 'object'})
 
-    def get_mimic_hosp_emar_detail(self):
-        return self.get_query_res_as_pandas_df(self._queries['mimic_hosp_emar_detail'])
+        df_emar_detail['subject_id'] = df_emar_detail['subject_id'].astype('float64')
 
-    def get_mimic_hosp_hcpcsevents(self):
-        return self.get_query_res_as_pandas_df(self._queries['mimic_hosp_hcpcsevents'])
+        return df_emar_detail
 
-    def get_mimic_hosp_labevents(self):
-        return self.get_query_res_as_pandas_df(self._queries['mimic_hosp_labevents'])
+    def read_hosp_hcpcsevents_csv(self):
+        df_hcpcsevents = self.read_data(self.join_path('hosp/hcpcsevents.csv'), dtype={'hcpcs_cd': 'object'})
+        df_hcpcsevents['subject_id'] = df_hcpcsevents['subject_id'].astype('float64')
+        df_hcpcsevents['hadm_id'] = df_hcpcsevents['hadm_id'].astype('float64')
+        return df_hcpcsevents
 
-    def get_mimic_hosp_microbiologyevents(self):
-        return self.get_query_res_as_pandas_df(self._queries['mimic_hosp_microbiologyevents'])
+    def read_hosp_labevents_csv(self):
+        df_labevents = self.read_data(self.join_path('hosp/labevents.csv'), dtype={'comments': 'object',
+                                                                                    'flag': 'object',
+                                                                                    'value': 'object'})
+        df_labevents['subject_id'] = df_labevents['subject_id'].astype('float64')
+        df_labevents['hadm_id'] = df_labevents['hadm_id'].astype('float64')
+        return df_labevents
 
-    def get_mimic_hosp_pharmacy(self):
-        return self.get_query_res_as_pandas_df(self._queries['mimic_hosp_pharmacy'])
+    def read_hosp_microbiologyevents_csv(self):
+        df_microbiologyevents = self.read_data(self.join_path('hosp/microbiologyevents.csv'), dtype={'comments': 'object',
+                                                                                                    'isolate_num': 'float64',
+                                                                                                    'org_itemid': 'float64',
+                                                                                                    'quantity': 'object'})
+        df_microbiologyevents['subject_id'] = df_microbiologyevents['subject_id'].astype('float64')
+        df_microbiologyevents['hadm_id'] = df_microbiologyevents['hadm_id'].astype('float64')
+        return df_microbiologyevents
 
-    def get_mimic_hosp_poe(self):
-        return self.get_query_res_as_pandas_df(self._queries['mimic_hosp_poe'])
+    def read_hosp_pharmacy_csv(self):
+        df_pharmacy = self.read_data(self.join_path('hosp/pharmacy.csv'), dtype={'expirationdate': 'object'})
+        df_pharmacy['subject_id'] = df_pharmacy['subject_id'].astype('float64')
+        df_pharmacy['hadm_id'] = df_pharmacy['hadm_id'].astype('float64')
+        return df_pharmacy
 
-    def get_mimic_hosp_poe_detail(self):
-        return self.get_query_res_as_pandas_df(self._queries['mimic_hosp_poe_detail'])
+    def read_hosp_poe_csv(self):
+        df_poe = self.read_data(self.join_path('hosp/poe.csv'), dtype={'discontinue_of_poe_id': 'object',
+                                                                        'discontinued_by_poe_id': 'object',
+                                                                        'order_status': 'object'})
 
-    def get_mimic_hosp_prescriptions(self):
-        return self.get_query_res_as_pandas_df(self._queries['mimic_hosp_prescriptions'])
+        df_poe['subject_id'] = df_poe['subject_id'].astype('float64')
+        df_poe['hadm_id'] = df_poe['hadm_id'].astype('float64')
+        return df_poe
 
-    def get_mimic_hosp_procedures_icd(self):
-        return self.get_query_res_as_pandas_df(self._queries['mimic_hosp_procedures_icd'])
+    def read_hosp_poe_detail_csv(self):
+        df_poe_detail = self.read_data(self.join_path('hosp/poe_detail.csv'), dtype=None)
+        df_poe_detail['subject_id'] = df_poe_detail['subject_id'].astype('float64')
+        return df_poe_detail
 
-    def get_mimic_hosp_services(self):
-        return self.get_query_res_as_pandas_df(self._queries['mimic_hosp_services'])
+    def read_hosp_prescriptions_csv(self):
+        df_prescriptions = self.read_data(self.join_path('hosp/prescriptions.csv'), dtype=None)
+        df_prescriptions['subject_id'] = df_prescriptions['subject_id'].astype('float64')
+        df_prescriptions['hadm_id'] = df_prescriptions['hadm_id'].astype('float64')
+        return df_prescriptions
 
-    def get_mimic_icu_chartevents(self):
-        return self.get_query_res_as_pandas_df(self._queries['mimic_icu_chartevents'])
+    def read_hosp_procedures_icd_csv(self):
+        df_procedures_icd = self.read_data(self.join_path('hosp/procedures_icd.csv'), dtype={'icd_code': 'object'})
+        df_procedures_icd['subject_id'] = df_procedures_icd['subject_id'].astype('float64')
+        df_procedures_icd['hadm_id'] = df_procedures_icd['hadm_id'].astype('float64')
+        return df_procedures_icd
 
-    def get_mimic_icu_d_items(self):
-        return self.get_query_res_as_pandas_df(self._queries['mimic_icu_d_items'])
+    def read_hosp_services_csv(self):
+        df_services = self.read_data(self.join_path('hosp/services.csv'), dtype={'prev_service': 'object'})
+        df_services['subject_id'] = df_services['subject_id'].astype('float64')
+        df_services['hadm_id'] = df_services['hadm_id'].astype('float64')
+        return df_services
+        
+    def read_icu_chartevents_csv(self):
+        df_chartevents = self.read_data(self.join_path('icu/chartevents.csv'), dtype={'value': 'float64',
+                                                                                    'valuenum': 'float64',
+                                                                                    'valueuom': 'object'})
+        df_chartevents['subject_id'] = df_chartevents['subject_id'].astype('float64')
+        df_chartevents['hadm_id'] = df_chartevents['hadm_id'].astype('float64')                                                            
+        return df_chartevents
 
-    def get_mimic_icu_datetimeevents(self):
-        return self.get_query_res_as_pandas_df(self._queries['mimic_icu_datetimeevents'])
+    def read_icu_d_items_csv(self):
+        df_d_items = self.read_data(self.join_path('icu/d_items.csv'), dtype=None)
+        return df_d_items
 
-    def get_mimic_icu_icustays(self):
-        return self.get_query_res_as_pandas_df(self._queries['mimic_icu_icustays'])
+    def read_icu_datetimeevents_csv(self):
+        df_datetimeevents = self.read_data(self.join_path('icu/datetimeevents.csv'), dtype=None)
+        df_datetimeevents['subject_id'] = df_datetimeevents['subject_id'].astype('float64')
+        df_datetimeevents['hadm_id'] = df_datetimeevents['hadm_id'].astype('float64')
+        return df_datetimeevents
 
-    def get_mimic_icu_inputevents(self):
-        return self.get_query_res_as_pandas_df(self._queries['mimic_icu_inputevents'])
+    def read_icu_icustays_csv(self):
+        df_icustays = self.read_data(self.join_path('icu/icustays.csv'), dtype=None)
+        df_icustays['subject_id'] = df_icustays['subject_id'].astype('float64')
+        df_icustays['hadm_id'] = df_icustays['hadm_id'].astype('float64')
+        return df_icustays
 
-    def get_mimic_icu_outputevents(self):
-        return self.get_query_res_as_pandas_df(self._queries['mimic_icu_outputevents'])
+    def read_icu_inputevents_csv(self):
+        df_inputevents = self.read_data(self.join_path('icu/inputevents.csv'), dtype={'originalamount': 'float64',
+                                                                                    'totalamount': 'float64'})
+        df_inputevents['subject_id'] = df_inputevents['subject_id'].astype('float64')
+        df_inputevents['hadm_id'] = df_inputevents['hadm_id'].astype('float64')
+        return df_inputevents
 
-    def get_mimic_icu_procedureevents(self):
-        return self.get_query_res_as_pandas_df(self._queries['mimic_icu_procedureevents'])
+    def read_icu_outputevents_csv(self):
+        df_outputevents = self.read_data(self.join_path('icu/outputevents.csv'), dtype={'value': 'float64'})
+        df_outputevents['subject_id'] = df_outputevents['subject_id'].astype('float64')
+        df_outputevents['hadm_id'] = df_outputevents['hadm_id'].astype('float64')
+        return df_outputevents
 
-    def get_mimic_tables(self):
-        query_str = "select relname from pg_class where relkind='r' and relname !~ '^(pg_|sql_)';"
-        return self.get_query_res_as_pandas_df(query_str)
+    def read_icu_procedureevents_csv(self):
+        df_procedureevents = self.read_data(self.join_path('icu/procedureevents.csv'), dtype={'originalamount': 'float64',
+                                                                                                'value': 'float64'})
+
+        df_procedureevents['subject_id'] = df_procedureevents['subject_id'].astype('float64')
+        df_procedureevents['hadm_id'] = df_procedureevents['hadm_id'].astype('float64')
+        return df_procedureevents
 
 class MIMICManipulations:
-    def __init__(self, credential_file):
-        self._mimic_instance = MIMIC(credential_file)
+    def __init__(self, dir_path):
+        self._mimic_instance = MIMIC(dir_path)
 
-    def get_df(self):
-        """
-        This method returns final dataframe after merging following tables:
-        - mimic_core_patients
-        - mimic_core_admissions
-        - mimic_core_transfers
-        - mimic_hosp_d_icd_procedures
-        - mimic_hosp_procedres_icd
-        - mimic_hosp_drgcodes
-        - mimic_hosp_microbiologyevents
-        - mimic_icu_procedurevents
-        - mimic_icu_icustays
-        """
-        df_admission = self._mimic_instance.get_mimic_core_addissions()
-        df_patients = self._mimic_instance.get_mimic_core_patients()
-        df_transfers = self._mimic_instance.get_mimic_core_transfers()
-        pass
-
-
-    
-
-    
+    def filter_core_admission(self, df):
+        df_admission = df[['subject_id', 'hadm_id', 'admittime', 'dischtime', 'admission_type', 'admission_location', 'discharge_location', 'insurance', 'language', 
+                    'marital_status', 'ethnicity', 'hospital_expire_flag']]
         
+        return df_admission
+
+    def filter_core_patients(self, df):
+        df_patient = df.drop(['dod'], axis=1)
+        
+        return df_patient
+
+    def filter_core_transfers(self, df):
+        df_transfer = df.drop(['intime', 'outtime'], axis = 1)
+        
+        return df_transfer
+
+    def merge_core_tables(self):
+        df_admission = self.filter_core_admission(self._mimic_instance.read_core_admissions_csv())
+        df_patient = self.filter_core_patients(self._mimic_instance.read_core_patients_csv())
+        df_transfers = self.filter_core_transfers(self._mimic_instance.read_core_transfers_csv())
+        df_core_merge = df_admission.merge(df_patient, how='left', on=['subject_id'])\
+                                    .merge(df_transfers, how='outer', on=['subject_id', 'hadm_id'])
+        return df_core_merge
+
+    def filter_hosp_diagnoses_icd(self, df):
+        df_diagnoses_icd = df[['subject_id', 'hadm_id', 'icd_code', 'icd_version']]
+        return df_diagnoses_icd
+
+    def filter_hosp_procedures_icd(self, df):
+        df_procedures_icd = df[['subject_id', 'hadm_id', 'icd_code', 'icd_version']]
+        return df_procedures_icd
+
+    def filter_hosp_lab_events(self, df):
+        df_lab_events = df[['labevent_id', 'subject_id', 'hadm_id', 'itemid', 'value', 'valuenum', 'flag', 'priority']]
+        return df_lab_events
+
+    def merge_hosp_lab_events_d_labitems(self):
+        df_lab_events = self.filter_hosp_lab_events(self._mimic_instance.read_hosp_labevents_csv())
+        df_d_lab_items = self._mimic_instance.read_hosp_d_labitems_csv()
+        df_lab_events_merge = df_lab_events.merge(df_d_lab_items, how='left', on=['itemid'])
+        return df_lab_events_merge
+
+    def filter_hosp_drgcodes(self, df):
+        df_drgcodes = df.drop(['description'], axis=1)
+        return df_drgcodes
+
+    def filter_hosp_emar(self, df):
+        df_emar = df[['subject_id', 'hadm_id', 'emar_id', 'poe_id', 'medication', 'event_txt']]
+        return df_emar
+
+    def filter_hosp_poe(self, df):
+        df_poe = df[['poe_id', 'subject_id', 'hadm_id', 'order_type', 'order_subtype', 'transaction_type']]
+        return df_poe
+
+    def merge_hosp_emar_poe(self):
+        df_emar = self.filter_hosp_emar(self._mimic_instance.read_hosp_emar_csv())
+        df_poe = self.filter_hosp_poe(self._mimic_instance.read_hosp_poe_csv())
+        df_merge_emar_poe = df_emar.merge(df_poe, how='outer', on=['poe_id', 'subject_id', 'hadm_id'])
+        df_merge_emar_poe.drop(['emar_id', 'poe_id'], axis=1)
+        return df_merge_emar_poe
+
+    def filter_hosp_microbiologyevents(self, df):
+        df_microbiologyevents = df[['subject_id', 'hadm_id', 'spec_type_desc', 'test_name', 'org_name', 'ab_name', 'interpretation']]
+        return df_microbiologyevents
+
+    def filter_hosp_prescriptions(self, df):
+        df_prescriptions = df[['subject_id', 'hadm_id', 'drug_type', 'drug', 'form_unit_disp', 'route']]
+        return df_prescriptions
+
+    def filter_hosp_service(self, df):
+        df_service = df[['subject_id', 'hadm_id', 'curr_service']]
+        return df_service
+
+    def merge_core_hosp_tables(self):
+        df_core_merged = self.merge_core_tables()
+        df_hosp_lab_events_merge = self.merge_hosp_lab_events_d_labitems()
+        df_hosp_emar_poe_merge = self.merge_hosp_emar_poe()
+        df_core_diagnoses_merge = df_core_merged.merge(self.filter_hosp_diagnoses_icd(self._mimic_instance.read_hosp_diagnoses_icd_csv()), how='outer', on=['subject_id', 'hadm_id'])\
+                                                .merge(self.filter_hosp_procedures_icd(self._mimic_instance.read_hosp_procedures_icd_csv()), how='outer', on=['subject_id', 'hadm_id', 'icd_code', 'icd_version'])
+        df_core_hosp_merge = df_core_diagnoses_merge.merge(self.filter_hosp_drgcodes(self._mimic_instance.read_hosp_drgcodes_csv()), how='outer', on=['subject_id', 'hadm_id'])
+        df_core_hosp_merge = df_core_hosp_merge.merge(df_hosp_lab_events_merge, how='outer', on=['subject_id', 'hadm_id'])
+        df_core_hosp_merge = df_core_hosp_merge.merge(df_hosp_emar_poe_merge, how='outer', on=['subject_id', 'hadm_id'])\
+                                               .merge(self.filter_hosp_prescriptions(self._mimic_instance.read_hosp_prescriptions_csv()), how='outer', on=['subject_id', 'hadm_id'])\
+                                               .merge(self.filter_hosp_microbiologyevents(self._mimic_instance.read_hosp_microbiologyevents_csv()), how='outer', on=['subject_id', 'hadm_id'])\
+                                               .merge(self.filter_hosp_service(self._mimic_instance.read_hosp_services_csv()), how='outer', on=['subject_id', 'hadm_id'])
+        return df_core_hosp_merge
+    
+    def filter_icu_icustays(self, df):
+        df_icustays = df.drop(['intime', 'outtime'], axis=1)
+        return df_icustays
+
+    def filter_icu_chartevents(self, df):
+        df_chartevents = df.drop(['charttime', 'storetime', 'itemid', 'valueuom', 'warning'], axis=1)
+        return df_chartevents
+
+    def merge_core_hosp_icu_tables(self):
+        df_core_hosp_merged = self.merge_core_hosp_tables()
+        df_core_hosp_icu_merged = df_core_hosp_merged.merge(self.filter_icu_icustays(self._mimic_instance.read_icu_icustays_csv()), how='outer', on=['subject_id', 'hadm_id', ])\
+                                                     .merge(self.filter_icu_chartevents(self._mimic_instance.read_icu_chartevents_csv()), how='outer', on=['subject_id', 'hadm_id', 'stay_id'])
+
+        df_core_hosp_icu_merged.drop(['stay_id'], axis=1)
+        return df_core_hosp_icu_merged
