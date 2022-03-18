@@ -3,28 +3,26 @@ This file will contain all the utility class and methods.
 """
 
 import pandas as pd
+import dask.dataframe as dd
+from pyparsing import col
 
 class generic_utils:
     def __init__(self):
         pass
 
-    def get_df_shape(self, df_generator):
+    def remove_duplicates_and_re_index(self, df, key):
         """
-        This method is used to get the shape of whole dataframe from its chunks.
+        This method is used to drop duplicate where "key" is column and set that "key" as index.
         """
-        row = 0
-        col = None
-        for item in df_generator:
-            col = item.shape[1]
-            row += item.shape[0]
+        df = df.drop_duplicates(subset = key)
+        df = df.set_index(key)
+        return df
 
-        return (row, col)
+    def replace_nan(self, df, column_name, value_to_replace):
+        df.loc[(df[column_name].isna()), column_name] = value_to_replace
+        return df
 
-    def get_full_df(self, df_generator):
-        full_df = pd.concat([df_chunk for df_chunk in df_generator])
-        return full_df
-
-    def print_df_head(self, df_generator):
-        for item in df_generator:
-            display(item.head())
-            break
+    def replace_column_value(self, df, column_name, threshold, value_to_replace):
+        mask = df[column_name].map(df[column_name].value_counts()) < threshold
+        df[column_name] = df[column_name].mask(mask, value_to_replace)
+        return df

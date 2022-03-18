@@ -4,14 +4,17 @@ This modules reads postgre sql database for MIMIC-IV and returns table as pandas
 Author: Priyanshu Sinha (prisinha@iu.edu)
 """
 import os
-from pickle import NONE
-from cv2 import DISOpticalFlow_PRESET_MEDIUM
 from matplotlib.pyplot import axis
 from numpy import dtype
 import pandas as pd
 import dask.dataframe as dd
+from datetime import datetime
 import glob2
 import sys
+
+sys.path.append('..')
+
+from utils.util import generic_utils
 
 class MIMIC:
     def __init__(self, dir_path) -> None:
@@ -163,7 +166,9 @@ class MIMIC:
         return df_poe_detail
 
     def read_hosp_prescriptions_csv(self):
-        df_prescriptions = self.read_data(self.join_path('hosp/prescriptions.csv'), dtype=None)
+        df_prescriptions = self.read_data(self.join_path('hosp/prescriptions.csv'), dtype={'form_rx': 'object',
+                                                                                            'gsn': 'object',
+                                                                                            'ndc': 'float64'})
         df_prescriptions['subject_id'] = df_prescriptions['subject_id'].astype('float64')
         df_prescriptions['hadm_id'] = df_prescriptions['hadm_id'].astype('float64')
         return df_prescriptions
@@ -181,7 +186,7 @@ class MIMIC:
         return df_services
         
     def read_icu_chartevents_csv(self):
-        df_chartevents = self.read_data(self.join_path('icu/chartevents.csv'), dtype={'value': 'float64',
+        df_chartevents = self.read_data(self.join_path('icu/chartevents.csv'), dtype={'value': 'object',
                                                                                     'valuenum': 'float64',
                                                                                     'valueuom': 'object'})
         df_chartevents['subject_id'] = df_chartevents['subject_id'].astype('float64')
@@ -228,21 +233,26 @@ class MIMIC:
 class MIMICManipulations:
     def __init__(self, dir_path):
         self._mimic_instance = MIMIC(dir_path)
+        self._util_instance = generic_utils()
 
     def filter_core_admission(self, df):
-        df_admission = df[['subject_id', 'hadm_id', 'admittime', 'dischtime', 'admission_type', 'admission_location', 'discharge_location', 'insurance', 'language', 
-                    'marital_status', 'ethnicity', 'hospital_expire_flag']]
-        
+        df_admission = df.drop(['hadm_id', 'edregtime', 'edouttime', 'deathtime'], axis=1)
+        df_admission['admittime'] = dd.to_datetime(df_admission['admittime'])
+        df_admission['dischtime'] = dd.to_datetime(df_admission['dischtime'])
+        df_admission['los_admission'] = (df_admission['dischtime'] - df_admission['admittime']).dt.total_seconds()/86400
+        df_admission = df_admission.drop(['admittime', 'dischtime'], axis=1)
+        df_admission = df_admission[df_admission['los_admission'] > 0]
+        df_admission = self._util_instance.remove_duplicates_and_re_index(df_admission, 'subject_id')
         return df_admission
 
     def filter_core_patients(self, df):
-        df_patient = df.drop(['dod'], axis=1)
-        
+        df_patient = df.drop(['anchor_year', 'anchor_year_group', 'dod'], axis=1)
+        df_patient = self._util_instance.remove_duplicates_and_re_index(df_patient, 'subject_id')
         return df_patient
 
     def filter_core_transfers(self, df):
-        df_transfer = df.drop(['intime', 'outtime'], axis = 1)
-        
+        df_transfer = df.drop(['hadm_id', 'transfer_id', 'intime', 'outtime'], axis=1)
+        df_transfer = self._util_instance.remove_duplicates_and_re_index(df_transfer, 'subject_id')
         return df_transfer
 
     def merge_core_tables(self):
@@ -254,15 +264,21 @@ class MIMICManipulations:
         return df_core_merge
 
     def filter_hosp_diagnoses_icd(self, df):
-        df_diagnoses_icd = df[['subject_id', 'hadm_id', 'icd_code', 'icd_version']]
+        df_diagnoses_icd = df.drop(['hadm_id', 'seq_num', 'icd_version'], axis=1)
+        df_diagnoses_icd = df_diagnoses_icd.rename(columns = {'icd_code':'diagnosis_icd_code'})
+        df_diagnoses_icd = self._util_instance.remove_duplicates_and_re_index(df_diagnoses_icd, 'subject_id')
         return df_diagnoses_icd
 
     def filter_hosp_procedures_icd(self, df):
-        df_procedures_icd = df[['subject_id', 'hadm_id', 'icd_code', 'icd_version']]
+        df_procedures_icd = df.drop(['hadm_id', 'seq_num', 'chartdate', 'icd_version'], axis = 1)
+        df_procedures_icd = df_procedures_icd.rename(columns = {'icd_code':'procedures_icd_code'})
+        df_procedures_icd = self._util_instance.remove_duplicates_and_re_index(df_procedures_icd, 'subject_id')
         return df_procedures_icd
 
     def filter_hosp_lab_events(self, df):
-        df_lab_events = df[['labevent_id', 'subject_id', 'hadm_id', 'itemid', 'value', 'valuenum', 'flag', 'priority']]
+        df_lab_events = df.drop(['labevent_id', 'specimen_id', 'itemid', 'charttime', 'storetime', 'valueuom', 
+                                    'ref_range_lower', 'ref_range_upper', 'comments', 'valuenum', 'hadm_id'], axis=1)
+        df_lab_events = self._util_instance.remove_duplicates_and_re_index(df_lab_events, 'subject_id')                            
         return df_lab_events
 
     def merge_hosp_lab_events_d_labitems(self):
@@ -272,15 +288,18 @@ class MIMICManipulations:
         return df_lab_events_merge
 
     def filter_hosp_drgcodes(self, df):
-        df_drgcodes = df.drop(['description'], axis=1)
+        df_drgcodes = df.drop(['hadm_id', 'description', 'drg_severity', 'drg_mortality'], axis=1)
+        df_drgcodes = self._util_instance.remove_duplicates_and_re_index(df_drgcodes, 'subject_id')
         return df_drgcodes
 
     def filter_hosp_emar(self, df):
-        df_emar = df[['subject_id', 'hadm_id', 'emar_id', 'poe_id', 'medication', 'event_txt']]
+        df_emar = df[['subject_id', 'medication', 'event_txt']]
+        df_emar = self._util_instance.remove_duplicates_and_re_index(df_emar, 'subject_id')
         return df_emar
 
     def filter_hosp_poe(self, df):
-        df_poe = df[['poe_id', 'subject_id', 'hadm_id', 'order_type', 'order_subtype', 'transaction_type']]
+        df_poe = df[['subject_id', 'order_type', 'transaction_type']]
+        df_poe = self._util_instance.remove_duplicates_and_re_index(df_poe, 'subject_id')
         return df_poe
 
     def merge_hosp_emar_poe(self):
@@ -291,15 +310,18 @@ class MIMICManipulations:
         return df_merge_emar_poe
 
     def filter_hosp_microbiologyevents(self, df):
-        df_microbiologyevents = df[['subject_id', 'hadm_id', 'spec_type_desc', 'test_name', 'org_name', 'ab_name', 'interpretation']]
+        df_microbiologyevents = df[['subject_id', 'org_name', 'test_name', 'quantity', 'ab_name']]
+        df_microbiologyevents = self._util_instance.remove_duplicates_and_re_index(df_microbiologyevents, 'subject_id')
         return df_microbiologyevents
 
     def filter_hosp_prescriptions(self, df):
-        df_prescriptions = df[['subject_id', 'hadm_id', 'drug_type', 'drug', 'form_unit_disp', 'route']]
+        df_prescriptions = df[['subject_id', 'drug', 'route']]
+        df_prescriptions = self._util_instance.remove_duplicates_and_re_index(df_prescriptions, 'subject_id')
         return df_prescriptions
 
     def filter_hosp_service(self, df):
-        df_service = df[['subject_id', 'hadm_id', 'curr_service']]
+        df_service = df[['subject_id', 'curr_service']]
+        df_service = self._util_instance.remove_duplicates_and_re_index(df_service, 'subject_id')
         return df_service
 
     def merge_core_hosp_tables(self):
@@ -317,11 +339,13 @@ class MIMICManipulations:
         return df_core_hosp_merge
     
     def filter_icu_icustays(self, df):
-        df_icustays = df.drop(['intime', 'outtime'], axis=1)
+        df_icustays = df.drop(['hadm_id', 'stay_id', 'intime', 'outtime'], axis=1)
+        df_icustays = self._util_instance.remove_duplicates_and_re_index(df_icustays, 'subject_id')
         return df_icustays
 
     def filter_icu_chartevents(self, df):
-        df_chartevents = df.drop(['charttime', 'storetime', 'itemid', 'valueuom', 'warning'], axis=1)
+        df_chartevents = df.drop(['hadm_id', 'stay_id', 'charttime', 'storetime', 'value', 'valuenum', 'valueuom', 'warning'], axis=1)
+        df_chartevents = self._util_instance.remove_duplicates_and_re_index(df_chartevents, 'subject_id')
         return df_chartevents
 
     def merge_core_hosp_icu_tables(self):
