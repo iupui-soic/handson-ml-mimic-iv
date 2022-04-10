@@ -31,7 +31,7 @@ class MIMIC:
             assert os.path.exists(self._dir_path) #Technically I should match all the file names and their size. Will do it later.
             print(f"MIMIC dataset found at path : {self._dir_path}")
         except AssertionError:
-            print(f"Datsaet directory is empty. Exiting system.")
+            print(f"Dataset directory is empty. Exiting system.")
             sys.exit(0)
 
     def read_data(self, file_path, dtype):
